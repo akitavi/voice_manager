@@ -1,13 +1,14 @@
+#Модуль для записи и воспроизведения звука
 import sounddevice as sd
 import queue
-import subprocess
-from vosk import Model, KaldiRecognizer
-import json
 import re
-import pygame  # For playing sound
+import soundfile as sf  # For playing sound
 import logging
 import os
 import sys
+import json
+import requests  # For sending REST API requests
+from vosk import Model, KaldiRecognizer
 
 # Configure logging
 logging.basicConfig(
@@ -35,48 +36,27 @@ rec = KaldiRecognizer(model, 16000)
 
 activation_detected = False  # Flag to prevent multiple activations
 
-# Initialize Pygame mixer
-pygame.mixer.init()
 
-def play_alert_sound():
+def play_alert_sound(file_path):
     try:
-        pygame.mixer.music.load("/home/alex/homeAI/voise_py/sounds/pops.wav")  # Provide absolute path if necessary
-        pygame.mixer.music.play()
+        # Чтение аудиофайла
+        data, sample_rate = sf.read(file_path)
+        # Воспроизведение аудиофайла через sounddevice
+        sd.play(data, samplerate=sample_rate)
+        sd.wait()  # Ожидание завершения воспроизведения
         logging.info("Звуковой сигнал воспроизведён")
     except Exception as e:
         logging.error(f"Ошибка при воспроизведении звука: {e}")
-
-def start_program(program_name, program_path):
-    logging.info(f"Команда распознана: запуск {program_name}")
-    try:
-        # Если в команде есть аргументы (например, для Steam), разделяем её на отдельные части
-        program_parts = program_path.split()  # Разбиваем строку на команду и её аргументы
-        subprocess.Popen(program_parts, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        logging.info(f"{program_name} успешно запущен")
-    except Exception as e:
-        logging.error(f"Ошибка при запуске {program_name}: {e}")
-
-def stop_program(program_command, is_shutdown=False):
-    if is_shutdown:
-        logging.info("Команда распознана: выключение системы")
-        try:
-            subprocess.Popen(["sudo", "/usr/sbin/poweroff"])
-            logging.info("Система выключена")
-        except Exception as e:
-            logging.error(f"Ошибка при выключении системы: {e}")
-    else:
-        logging.info(f"Команда распознана: выключение {program_command}")
-        try:
-            subprocess.Popen(["pkill", program_command])
-            logging.info(f"{program_command} успешно закрыт")
-        except Exception as e:
-            logging.error(f"Ошибка при закрытии {program_command}: {e}")
 
 # Dictionary of programs and commands with synonyms
 programs = {
     ('браузер', 'брауер', 'chrome'): {
         'start': ('Google Chrome', '/usr/bin/google-chrome'),
         'stop': 'chrome'
+    },
+    ('музыка', 'музыку', 'yandex'): {
+        'start': ('Музыка', None), 
+        'stop': 'music'
     },
     ('редактор', 'саблайм', 'sublime', 'текстовый'): {
         'start': ('Текстовый редактор', '/usr/bin/subl'),
@@ -109,36 +89,129 @@ activation_removal_pattern = re.compile(
 )
 start_pattern = re.compile(r"\b(включ[иы]|запуст[иы]|откр[оа]й|покаж[иы]|откр[юу]|открыть|включить)\b")
 stop_pattern = re.compile(r"\b(выключ[иы]|закрыть|закр[оа]й|останов[иы]|прекрат[иы]|выключить)\b")
+music_play_pattern = re.compile(r"\b(включ[иыть] музы[ку]|нач[ао]ть воспроизвед[её]ние)\b")
+music_pause_pattern = re.compile(r"\b(пауз[ау]|продолж(и|ил|ить|ать|им|ишь|ит|им|ите|ат))\b")
+music_next_pattern = re.compile(r"\b(следующ[иы]й|следующ[иы]й трек)\b")
+music_volume_pattern = re.compile(r"\bгромкость\s*(\d+)\b")
+
+
+
+def send_command(command_type, command_name, parameters):
+    url = 'http://localhost:5000/execute'  # URL вашего Flask-сервера
+    payload = {
+        'command_type': command_type,
+        'command_name': command_name,
+        'parameters': parameters
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            logging.info(f"Команда отправлена успешно: {response.json()}")
+        else:
+            logging.error(f"Ошибка при отправке команды: {response.status_code} {response.text}")
+    except Exception as e:
+        logging.error(f"Ошибка при отправке команды: {e}")
+
+number_words_to_digits = {
+    'ноль': 0, 'один': 1, 'два': 2, 'три': 3, 'четыре': 4, 
+    'пять': 5, 'шесть': 6, 'семь': 7, 'восемь': 8, 'девять': 9, 'десять': 10
+}
+
+def replace_number_words_with_digits(text):
+    for word, digit in number_words_to_digits.items():
+        text = re.sub(rf"\b{word}\b", str(digit), text)
+    return text
+
 
 def process_command(text):
     global activation_detected
     text = text.lower()
 
-    # Remove activation words from the command text to prevent re-activation
+    # Удаляем слова активации из текста команды
     text = activation_removal_pattern.sub("", text).strip()
 
     if not text:
         logging.warning("Команда пуста после удаления слов активации.")
-        activation_detected = False  # Reset activation flag
+        activation_detected = False  # Сбрасываем флаг активации
+        return
+    text = replace_number_words_with_digits(text)
+
+    # Проверка команды громкости
+    volume_match = music_volume_pattern.search(text)
+    if volume_match:
+        volume_level = int(volume_match.group(1))
+        send_command('music', 'setVolume', {'level': volume_level})
+        activation_detected = False
         return
 
+    # **Проверяем музыкальные команды перед программными**
+    if music_play_pattern.search(text):
+        send_command('music', 'play', {})
+        activation_detected = False
+        return
+    elif music_pause_pattern.search(text):
+        send_command('music', 'togglePause', {})
+        activation_detected = False
+        return
+    elif music_next_pattern.search(text):
+        send_command('music', 'next', {})
+        activation_detected = False
+        return
+
+    # Теперь обрабатываем программные команды
     for program_keywords, program_info in programs.items():
-        # Create regex pattern for program keywords
+        program_pattern = r"\b(" + "|".join([re.escape(keyword) for keyword in program_keywords]) + r")\b"
+
+        # Проверка команды запуска
+        if start_pattern.search(text) and re.search(program_pattern, text):
+            if 'start' in program_info:
+                command_type = 'start'
+                program_name, program_path = program_info['start']
+                parameters = {}
+                send_command(command_type, program_name, parameters)
+                activation_detected = False
+            return
+
+        # Проверка команды остановки
+        if stop_pattern.search(text) and re.search(program_pattern, text):
+            if 'stop' in program_info:
+                command_type = 'stop'
+                command_name = program_info['stop']
+                parameters = {}
+                send_command(command_type, command_name, parameters)
+                activation_detected = False
+            return
+
+
+    logging.warning(f"Неизвестная команда: {text}")
+    # Существующая обработка программ
+    for program_keywords, program_info in programs.items():
         program_pattern = r"\b(" + "|".join([re.escape(keyword) for keyword in program_keywords]) + r")\b"
 
         # Check for start command
         if start_pattern.search(text) and re.search(program_pattern, text):
             if 'start' in program_info:
+                command_type = 'start'
                 program_name, program_path = program_info['start']
-                start_program(program_name, program_path)
+                parameters = {}
+                # For browser commands, check if there is a URL in text
+                if program_name == 'Google Chrome':
+                    # Extract URL from text if possible
+                    url_match = re.search(r'\b(https?://[^\s]+)', text)
+                    if url_match:
+                        parameters['url'] = url_match.group(0)
+                send_command(command_type, program_name, parameters)
+                activation_detected = False
             return
 
         # Check for stop command
         if stop_pattern.search(text) and re.search(program_pattern, text):
             if 'stop' in program_info:
-                stop_command = program_info['stop']
-                is_shutdown = stop_command == 'poweroff'
-                stop_program(stop_command, is_shutdown=is_shutdown)
+                command_type = 'stop'
+                command_name = program_info['stop']
+                parameters = {}
+                send_command(command_type, command_name, parameters)
+                activation_detected = False
             return
 
     logging.warning(f"Неизвестная команда: {text}")
@@ -169,7 +242,7 @@ def recognize_loop():
 
                 if not activation_detected and activation_pattern.search(partial_text):
                     logging.info(f"Слово активации распознано (промежуточно): '{partial_text}'. Ожидание команды...")
-                    play_alert_sound()
+                    play_alert_sound("/home/alex/homeAI/voise_py/sounds/pops.wav")
                     activation_detected = True
             except json.JSONDecodeError as e:
                 logging.error(f"Ошибка декодирования JSON промежуточного результата: {e}")
@@ -180,7 +253,7 @@ def process_text(text):
     if not activation_detected:
         if activation_pattern.search(text):
             logging.info(f"Слово активации распознано: '{text}'. Ожидание команды...")
-            play_alert_sound()
+            play_alert_sound("/home/alex/homeAI/voise_py/sounds/pops.wav")
             activation_detected = True
     else:
         # Remove activation words from the command text to prevent re-activation
