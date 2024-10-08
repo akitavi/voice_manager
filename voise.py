@@ -11,11 +11,16 @@ import requests  # For sending REST API requests
 from vosk import Model, KaldiRecognizer
 
 # Configure logging
+log_directory = "logs"
+log_file = os.path.join(log_directory, "homai_voice.log")
 logging.basicConfig(
     level=logging.DEBUG,  # Change to INFO in production
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.StreamHandler(),  # Вывод логов в консоль
+        logging.FileHandler(log_file, mode='a')  # Запись логов в файл
+    ]
 )
 
 q = queue.Queue()
@@ -36,11 +41,12 @@ rec = KaldiRecognizer(model, 16000)
 
 activation_detected = False  # Flag to prevent multiple activations
 
+pops_sound = "/home/alex/homeAI/voise_py/sounds/pops.mp3"
 
-def play_alert_sound(file_path):
+def play_alert_sound(file_path=pops_sound):
     try:
         # Чтение аудиофайла
-        data, sample_rate = sf.read(file_path)
+        data, sample_rate = sf.read(file_path)  # Используем file_path, переданный в функцию
         # Воспроизведение аудиофайла через sounddevice
         sd.play(data, samplerate=sample_rate)
         sd.wait()  # Ожидание завершения воспроизведения
@@ -87,12 +93,14 @@ activation_pattern = re.compile(
 activation_removal_pattern = re.compile(
     r"\b(" + "|".join([re.escape(word) for word in activation_words]) + r")\b|^или\b"
 )
-start_pattern = re.compile(r"\b(включ[иы]|запуст[иы]|откр[оа]й|покаж[иы]|откр[юу]|открыть|включить)\b")
-stop_pattern = re.compile(r"\b(выключ[иы]|закрыть|закр[оа]й|останов[иы]|прекрат[иы]|выключить)\b")
-music_play_pattern = re.compile(r"\b(включ[иыть] музы[ку]|нач[ао]ть воспроизвед[её]ние)\b")
-music_pause_pattern = re.compile(r"\b(пауз[ау]|продолж(и|ил|ить|ать|им|ишь|ит|им|ите|ат))\b")
-music_next_pattern = re.compile(r"\b(следующ[иы]й|следующ[иы]й трек)\b")
-music_volume_pattern = re.compile(r"\bгромкость\s*(\d+)\b")
+
+
+start_pattern = re.compile(r"(включ[иы]|запуст[иы]|откр[оа]й|покаж[иы]|откр[юу]|открыть|включить)")
+stop_pattern = re.compile(r"(выключ[иы]|закрыть|закр[оа]й|останов[иы]|прекрат[иы]|выключить)")
+music_play_pattern = re.compile(r"(включ[иыть] музы[ку]|нач[ао]ть воспроизвед[её]ние)")
+music_pause_pattern = re.compile(r"(пауз[ау]|продолж(и|ил|ить|ать|им|ишь|ит|им|ите|ат))")
+music_next_pattern = re.compile(r"(следующ(ий|ие|ее|ей))")
+music_volume_pattern = re.compile(r"громкость\s*(\d+)")
 
 
 
@@ -242,7 +250,7 @@ def recognize_loop():
 
                 if not activation_detected and activation_pattern.search(partial_text):
                     logging.info(f"Слово активации распознано (промежуточно): '{partial_text}'. Ожидание команды...")
-                    play_alert_sound("/home/alex/homeAI/voise_py/sounds/pops.wav")
+                    play_alert_sound()
                     activation_detected = True
             except json.JSONDecodeError as e:
                 logging.error(f"Ошибка декодирования JSON промежуточного результата: {e}")

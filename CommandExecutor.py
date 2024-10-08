@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 import subprocess
 import threading
 import logging
-import time
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
@@ -10,11 +10,16 @@ from selenium.webdriver.support.ui import WebDriverWait
 app = Flask(__name__)
 
 # Configure logging
+log_directory = "logs"
+log_file = os.path.join(log_directory, "homeai_comand.log")
 logging.basicConfig(
     level=logging.DEBUG,  # Change to INFO in production
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.StreamHandler(),  # Вывод логов в консоль
+        logging.FileHandler(log_file, mode='a')  # Запись логов в файл
+    ]
 )
 
 # Dictionary of programs and commands
@@ -79,7 +84,6 @@ def handle_music_command(command_name, parameters={}):
     if browser_driver is None:
         logging.info("Браузер не открыт, открываем браузер для музыки")
         open_music_browser()
-        time.sleep(3)  # Ждём 3 секунды для полной загрузки страницы
 
     try:
         # Проверяем наличие externalAPI на странице
@@ -169,7 +173,6 @@ def open_browser(url):
         driver = webdriver.Chrome(options=options)
         driver.get(url)
         # Keep the browser open or perform additional actions
-        time.sleep(3)
         driver.quit()
         logging.info("Браузер успешно открыт и закрыт")
     except Exception as e:
@@ -180,14 +183,18 @@ def open_music_browser():
     logging.info("Открытие браузера для музыки")
     try:
         options = Options()
+        # options.add_argument("--headless")
         options.add_argument("user-data-dir=/home/alex/.config/google-chrome-selenium")
         browser_driver = webdriver.Chrome(options=options)
+        # browser_driver.set_page_load_timeout(15)
+        # browser_driver.set_script_timeout(15)
+        # browser_driver.implicitly_wait(15)
 
         music_url = 'https://music.yandex.ru'
         browser_driver.get(music_url)
 
         # Ожидаем загрузку страницы и доступность externalAPI
-        wait = WebDriverWait(browser_driver, 20)
+        wait = WebDriverWait(browser_driver, 5)
         wait.until(lambda driver: driver.execute_script("return typeof externalAPI !== 'undefined';"))
 
         logging.info("Браузер для музыки успешно открыт")
